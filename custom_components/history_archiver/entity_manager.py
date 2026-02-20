@@ -1,177 +1,137 @@
-from __future__ import annotations
+import logging
+from datetime import datetime
+from typing import Any
 
-from dataclasses import dataclass
-from typing import Optional, List
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import async_get as async_get_device_registry
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
-from homeassistant.core import HomeAssistant, State
+from .const import METADATA_FIELDS
+from .database import Database
 
-from .database import execute, fetchall
-
-
-@dataclass
-class EntityRecord:
-    """Represents a single Home Assistant entity stored in the DB."""
-    id: int
-    entity_id: str
-    domain: str
-    area: Optional[str]
-    device: Optional[str]
-    friendly_name: Optional[str]
-    auto_added: bool
-    last_metadata_update: Optional[str]
+_LOGGER = logging.getLogger(__name__)
 
 
 class EntityManager:
-    """Handles entity storage, metadata tracking, and profile linking."""
+    """Tracks entities, their metadata, and metadata selection."""
 
-    def __init__(self, hass: HomeAssistant):
-        self.hass = hass
+    def __init__(self, hass: HomeAssistant, db: Database) -> None:
+        self._hass = hass
+        self._db = db
 
-    # -----------------------------
-    # LOAD ENTITIES
-    # -----------------------------
-    def load_entities(self) -> List[EntityRecord]:
-        rows = fetchall(self.hass, """
-            SELECT id, entity_id, domain, area, device, friendly_name,
-                   auto_added, last_metadata_update
-            FROM entities
-        """)
+    async def async_sync_entities(self) -> None:
+        """Sync entities from HA registries into our DB."""
+        dev_reg = async_get_device_registry(self._hass)
+        ent_reg = async_get_entity_registry(self._hass)
 
-        entities = []
-        for row in rows:
-            entities.append(EntityRecord(
-                id=row[0],
-                entity_id=row[1],
-                domain=row[2],
-                area=row[3],
-                device=row[4],
-                friendly_name=row[5],
-                auto_added=bool(row[6]),
-                last_metadata_update=row[7],
-            ))
+        now = datetime.utcnow().isoformat()
 
-        return entities
+        for entity in ent_reg.entities.values():
+            entity_id = entity.entity_id
+            device_id = entity.device_id
+            area_id = entity.area_id
 
-    # -----------------------------
-    # ADD ENTITY
-    # -----------------------------
-    def add_entity(
-        self,
-        entity_id: str,
-        domain: str,
-        area: Optional[str],
-        device: Optional[str],
-        friendly_name: Optional[str],
-        auto_added: bool = False,
-    ):
-        execute(self.hass, """
-            INSERT OR IGNORE INTO entities (
-                entity_id, domain, area, device, friendly_name,
-                auto_added, last_metadata_update
+            row = await self._db.async_fetchone(
+                "SELECT id FROM entities WHERE entity_id = ?",
+                (entity_id,),
             )
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-        """, (
-            entity_id,
-            domain,
-            area,
-            device,
-            friendly_name,
-            int(auto_added),
-        ))
-
-    # -----------------------------
-    # UPDATE METADATA + LOG CHANGES
-    # -----------------------------
-    def update_metadata(
-        self,
-        entity_id: str,
-        new_area: Optional[str],
-        new_device: Optional[str],
-        new_name: Optional[str],
-    ):
-        # Get current metadata
-        rows = fetchall(self.hass, """
-            SELECT id, area, device, friendly_name
-            FROM entities
-            WHERE entity_id = ?
-        """, (entity_id,))
-
-        if not rows:
-            return  # entity not in DB yet
-
-        entity_db_id, old_area, old_device, old_name = rows[0]
-
-        # Detect changes
-        if old_area != new_area or old_device != new_device or old_name != new_name:
-            # Log metadata change
-            execute(self.hass, """
-                INSERT INTO metadata_changes (
-                    entity_id, timestamp,
-                    old_area, new_area,
-                    old_device, new_device,
-                    old_name, new_name
+            if row is None:
+                await self._db.async_execute(
+                    """
+                    INSERT INTO entities (entity_id, device_id, area_id, stats_mode, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (entity_id, device_id, area_id, "raw", now, now),
                 )
-                VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?)
-            """, (
-                entity_db_id,
-                old_area, new_area,
-                old_device, new_device,
-                old_name, new_name,
-            ))
+            else:
+                await self._db.async_execute(
+                    """
+                    UPDATE entities
+                    SET device_id = ?, area_id = ?, updated_at = ?
+                    WHERE entity_id = ?
+                    """,
+                    (device_id, area_id, now, entity_id),
+                )
 
-            # Update entity record
-            execute(self.hass, """
-                UPDATE entities
-                SET area = ?, device = ?, friendly_name = ?, last_metadata_update = datetime('now')
-                WHERE id = ?
-            """, (
-                new_area,
-                new_device,
-                new_name,
-                entity_db_id,
-            ))
+            # Ensure metadata selection rows exist
+            for field in METADATA_FIELDS:
+                await self._db.async_execute(
+                    """
+                    INSERT OR IGNORE INTO entity_metadata_selection (entity_id, field_name, selected)
+                    VALUES (?, ?, 0)
+                    """,
+                    (entity_id, field),
+                )
 
-    # -----------------------------
-    # LINK ENTITY TO PROFILE
-    # -----------------------------
-    def link_entity_to_profile(
-        self,
-        profile_id: int,
-        entity_db_id: int,
-        include: bool = True,
-    ):
-        execute(self.hass, """
-            INSERT OR IGNORE INTO profile_entities (
-                profile_id, entity_id, include
+    async def async_get_entity_tree(self) -> dict[str, Any]:
+        """Return entities grouped by device for UI."""
+        dev_reg = async_get_device_registry(self._hass)
+        ent_reg = async_get_entity_registry(self._hass)
+
+        rows = await self._db.async_fetchall(
+            """
+            SELECT e.entity_id, e.device_id, e.area_id,
+                   ms.field_name, ms.selected
+            FROM entities e
+            LEFT JOIN entity_metadata_selection ms
+                ON e.entity_id = ms.entity_id
+            ORDER BY e.entity_id, ms.field_name
+            """
+        )
+
+        tree: dict[str, Any] = {}
+
+        # Build metadata selection map
+        meta_map: dict[str, dict[str, bool]] = {}
+        for entity_id, device_id, area_id, field_name, selected in rows:
+            meta_map.setdefault(entity_id, {})[field_name] = bool(selected)
+
+        for entity in ent_reg.entities.values():
+            entity_id = entity.entity_id
+            device_id = entity.device_id
+            dev = dev_reg.devices.get(device_id) if device_id else None
+
+            device_key = device_id or f"no_device::{entity_id}"
+
+            if device_key not in tree:
+                tree[device_key] = {
+                    "device_id": device_id,
+                    "device_name": dev.name if dev else "Unassigned device",
+                    "manufacturer": dev.manufacturer if dev else None,
+                    "model": dev.model if dev else None,
+                    "entities": [],
+                }
+
+            tree[device_key]["entities"].append(
+                {
+                    "entity_id": entity_id,
+                    "friendly_name": entity.original_name or entity_id,
+                    "domain": entity.domain,
+                    "selected_metadata": meta_map.get(entity_id, {}),
+                }
             )
+
+        return tree
+
+    async def async_set_metadata_selection(
+        self, entity_id: str, field_name: str, selected: bool
+    ) -> None:
+        await self._db.async_execute(
+            """
+            INSERT INTO entity_metadata_selection (entity_id, field_name, selected)
             VALUES (?, ?, ?)
-        """, (
-            profile_id,
-            entity_db_id,
-            int(include),
-        ))
+            ON CONFLICT(entity_id, field_name)
+            DO UPDATE SET selected = excluded.selected
+            """,
+            (entity_id, field_name, int(selected)),
+        )
 
-    # -----------------------------
-    # UPDATE PER-ENTITY STATS CONFIG
-    # -----------------------------
-    def update_entity_stats(
-        self,
-        profile_id: int,
-        entity_db_id: int,
-        **kwargs,
-    ):
-        fields = []
-        values = []
-
-        for key, value in kwargs.items():
-            fields.append(f"{key} = ?")
-            values.append(value)
-
-        values.append(profile_id)
-        values.append(entity_db_id)
-
-        execute(self.hass, f"""
-            UPDATE profile_entities
-            SET {', '.join(fields)}
-            WHERE profile_id = ? AND entity_id = ?
-        """, tuple(values))
+    async def async_record_sample(self, entity_id: str, value: float) -> None:
+        now = datetime.utcnow().isoformat()
+        await self._db.async_execute(
+            """
+            INSERT INTO state_samples (entity_id, ts, value, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (entity_id, now, value, now),
+        )
