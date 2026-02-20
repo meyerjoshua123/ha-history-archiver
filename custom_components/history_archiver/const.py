@@ -54,3 +54,8 @@ DATA_ACCURACY_WEIGHTED_MEAN = "weighted_mean"
 
 DB_FILENAME = "history.db"
 DB_SCHEMA_VERSION = 1
+
+BACKUP_FOLDER = "history_archiver_backups"
+
+SERVICE_BACKUP_DB = "backup_db"
+SERVICE_RESTORE_DB = "restore_db"
