@@ -1,168 +1,186 @@
-from __future__ import annotations
-
+import asyncio
+import logging
 import os
-import sqlite3
+from datetime import datetime
+
+import aiosqlite
 from homeassistant.core import HomeAssistant
 
-DB_FILENAME = "history_archiver.db"
+from .const import DOMAIN, DB_FILENAME, DB_SCHEMA_VERSION, DATA_DB
+
+_LOGGER = logging.getLogger(__name__)
 
 
-def get_db_path(hass: HomeAssistant) -> str:
-    """Return the full path to the SQLite database file."""
-    storage_path = hass.config.path(".storage")
-    return os.path.join(storage_path, DB_FILENAME)
+class Database:
+    """SQLite database wrapper for History Archiver."""
 
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+        self._db_path = hass.config.path(DOMAIN, DB_FILENAME)
+        self._conn: aiosqlite.Connection | None = None
+        self._lock = asyncio.Lock()
 
-def initialize_database(hass: HomeAssistant):
-    """Create the database and tables if they do not exist."""
-    db_path = get_db_path(hass)
+    @property
+    def path(self) -> str:
+        return self._db_path
 
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    async def async_initialize(self) -> None:
+        os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
+        self._conn = await aiosqlite.connect(self._db_path)
+        await self._conn.execute("PRAGMA journal_mode=WAL;")
+        await self._conn.execute("PRAGMA foreign_keys=ON;")
+        await self._ensure_schema()
+        _LOGGER.info("History Archiver DB initialized at %s", self._db_path)
 
-    # Profiles table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS profiles (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            update_interval INTEGER NOT NULL,
-            file_duration TEXT NOT NULL,
-            retention_local INTEGER NOT NULL,
-            auto_add INTEGER NOT NULL DEFAULT 0,
-            linked_profiles TEXT,
-            upload_backend TEXT,
-            upload_path TEXT,
-            created_at TEXT
+    async def _ensure_schema(self) -> None:
+        async with self._conn.execute(
+            "PRAGMA user_version;"
+        ) as cursor:
+            row = await cursor.fetchone()
+            version = row[0] if row else 0
+
+        if version == 0:
+            await self._create_schema()
+        elif version != DB_SCHEMA_VERSION:
+            _LOGGER.warning(
+                "DB schema version mismatch: %s != %s",
+                version,
+                DB_SCHEMA_VERSION,
+            )
+            # Here you could implement migrations later.
+
+    async def _create_schema(self) -> None:
+        _LOGGER.info("Creating History Archiver DB schema")
+
+        await self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS schema_version (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                version INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO schema_version (id, version)
+            VALUES (1, :version);
+
+            CREATE TABLE IF NOT EXISTS entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_id TEXT NOT NULL UNIQUE,
+                device_id TEXT,
+                area_id TEXT,
+                stats_mode TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS entity_metadata_selection (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_id TEXT NOT NULL,
+                field_name TEXT NOT NULL,
+                selected INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(entity_id, field_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                tags TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                archived INTEGER NOT NULL DEFAULT 0,
+                auto_add_entities INTEGER NOT NULL DEFAULT 0,
+                export_formats TEXT NOT NULL,
+                schedule_json TEXT,
+                date_active_from TEXT,
+                date_active_until TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS profile_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL,
+                entity_id TEXT NOT NULL,
+                approved INTEGER NOT NULL DEFAULT 0,
+                auto_added INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS state_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_id TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                value REAL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_state_samples_entity_ts
+                ON state_samples(entity_id, ts);
+
+            CREATE TABLE IF NOT EXISTS export_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER,
+                export_type TEXT NOT NULL,
+                start_ts TEXT NOT NULL,
+                end_ts TEXT NOT NULL,
+                resolution_seconds INTEGER NOT NULL,
+                formats TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                details TEXT,
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS db_backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL
+            );
+            """
         )
-    """)
-
-    # Entities table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS entities (
-            id INTEGER PRIMARY KEY,
-            entity_id TEXT UNIQUE NOT NULL,
-            domain TEXT,
-            area TEXT,
-            device TEXT,
-            friendly_name TEXT,
-            auto_added INTEGER NOT NULL DEFAULT 0,
-            last_metadata_update TEXT
+        await self._conn.execute(
+            "PRAGMA user_version = ?;", (DB_SCHEMA_VERSION,)
         )
-    """)
+        await self._conn.commit()
 
-    # Profile-entity link table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS profile_entities (
-            id INTEGER PRIMARY KEY,
-            profile_id INTEGER NOT NULL,
-            entity_id INTEGER NOT NULL,
-            include INTEGER NOT NULL DEFAULT 1,
-            stats_first INTEGER DEFAULT 1,
-            stats_last INTEGER DEFAULT 1,
-            stats_mean INTEGER DEFAULT 1,
-            stats_mode INTEGER DEFAULT 1,
-            stats_min INTEGER DEFAULT 1,
-            stats_max INTEGER DEFAULT 1,
-            FOREIGN KEY(profile_id) REFERENCES profiles(id),
-            FOREIGN KEY(entity_id) REFERENCES entities(id)
+    async def async_execute(self, query: str, params: tuple | dict | None = None):
+        async with self._lock:
+            await self._conn.execute(query, params or ())
+            await self._conn.commit()
+
+    async def async_fetchall(self, query: str, params: tuple | dict | None = None):
+        async with self._lock:
+            async with self._conn.execute(query, params or ()) as cursor:
+                rows = await cursor.fetchall()
+        return rows
+
+    async def async_fetchone(self, query: str, params: tuple | dict | None = None):
+        async with self._lock:
+            async with self._conn.execute(query, params or ()) as cursor:
+                row = await cursor.fetchone()
+        return row
+
+    async def async_backup(self, backup_path: str) -> None:
+        """Create a backup copy of the DB."""
+        _LOGGER.info("Creating DB backup at %s", backup_path)
+        async with self._lock:
+            # Use backup API by opening a new connection
+            async with aiosqlite.connect(backup_path) as backup_conn:
+                await self._conn.backup(backup_conn)
+        stat = os.stat(backup_path)
+        await self.async_execute(
+            """
+            INSERT INTO db_backups (filename, created_at, size_bytes)
+            VALUES (?, ?, ?)
+            """,
+            (
+                os.path.basename(backup_path),
+                datetime.utcnow().isoformat(),
+                stat.st_size,
+            ),
         )
-    """)
 
-    # State samples
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS state_samples (
-            id INTEGER PRIMARY KEY,
-            profile_id INTEGER NOT NULL,
-            entity_id INTEGER NOT NULL,
-            timestamp TEXT NOT NULL,
-            value TEXT,
-            FOREIGN KEY(profile_id) REFERENCES profiles(id),
-            FOREIGN KEY(entity_id) REFERENCES entities(id)
-        )
-    """)
-
-    # Metadata changes
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS metadata_changes (
-            id INTEGER PRIMARY KEY,
-            entity_id INTEGER NOT NULL,
-            timestamp TEXT NOT NULL,
-            old_area TEXT,
-            new_area TEXT,
-            old_device TEXT,
-            new_device TEXT,
-            old_name TEXT,
-            new_name TEXT,
-            FOREIGN KEY(entity_id) REFERENCES entities(id)
-        )
-    """)
-
-    # Events log
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS events_log (
-            id INTEGER PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            entity_id TEXT,
-            event_type TEXT NOT NULL,
-            source TEXT,
-            context_id TEXT,
-            details TEXT
-        )
-    """)
-
-    # Upload history
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS uploads (
-            id INTEGER PRIMARY KEY,
-            profile_id INTEGER NOT NULL,
-            file_name TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            status TEXT NOT NULL,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            FOREIGN KEY(profile_id) REFERENCES profiles(id)
-        )
-    """)
-
-    # Stats table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS stats (
-            id INTEGER PRIMARY KEY,
-            profile_id INTEGER NOT NULL,
-            entity_id INTEGER NOT NULL,
-            period_start TEXT NOT NULL,
-            period_end TEXT NOT NULL,
-            first_value TEXT,
-            last_value TEXT,
-            mean_value REAL,
-            mode_value TEXT,
-            min_value REAL,
-            max_value REAL,
-            FOREIGN KEY(profile_id) REFERENCES profiles(id),
-            FOREIGN KEY(entity_id) REFERENCES entities(id)
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-def execute(hass: HomeAssistant, query: str, params: tuple = ()):
-    """Execute a write query."""
-    db_path = get_db_path(hass)
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    conn.commit()
-    conn.close()
-
-
-def fetchall(hass: HomeAssistant, query: str, params: tuple = ()):
-    """Execute a read query and return all rows."""
-    db_path = get_db_path(hass)
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+    async def async_close(self) -> None:
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
