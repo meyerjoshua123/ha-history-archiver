@@ -3,6 +3,7 @@
   "name": "History Archiver",
   "version": "0.1.0",
   "documentation": "https://github.com/meyerjoshua123/ha-history-archiver",
+  "issue_tracker": "https://github.com/meyerjoshua123/ha-history-archiver/issues",
   "requirements": [
     "aiosqlite>=0.19.0",
     "openpyxl>=3.1.0",
@@ -10,11 +11,13 @@
     "pyarrow>=15.0.0"
   ],
   "codeowners": [
-    "@your-github"
+    "@meyerjoshua123"
   ],
   "config_flow": true,
   "iot_class": "local_push",
   "loggers": [
     "history_archiver"
-  ]
+  ],
+  "integration_type": "service",
+  "icon": "icon.png"
 }
