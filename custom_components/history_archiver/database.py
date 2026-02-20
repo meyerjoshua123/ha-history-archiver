@@ -2,11 +2,12 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+from shutil import copy2
 
 import aiosqlite
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, DB_FILENAME, DB_SCHEMA_VERSION, DATA_DB
+from .const import DB_FILENAME, DB_SCHEMA_VERSION, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,9 +34,7 @@ class Database:
         _LOGGER.info("History Archiver DB initialized at %s", self._db_path)
 
     async def _ensure_schema(self) -> None:
-        async with self._conn.execute(
-            "PRAGMA user_version;"
-        ) as cursor:
+        async with self._conn.execute("PRAGMA user_version;") as cursor:
             row = await cursor.fetchone()
             version = row[0] if row else 0
 
@@ -47,7 +46,7 @@ class Database:
                 version,
                 DB_SCHEMA_VERSION,
             )
-            # Here you could implement migrations later.
+            # Migrations could be added here later.
 
     async def _create_schema(self) -> None:
         _LOGGER.info("Creating History Archiver DB schema")
@@ -164,7 +163,6 @@ class Database:
         """Create a backup copy of the DB."""
         _LOGGER.info("Creating DB backup at %s", backup_path)
         async with self._lock:
-            # Use backup API by opening a new connection
             async with aiosqlite.connect(backup_path) as backup_conn:
                 await self._conn.backup(backup_conn)
         stat = os.stat(backup_path)
@@ -180,7 +178,20 @@ class Database:
             ),
         )
 
+    async def async_restore(self, source_path: str) -> None:
+        """Restore DB from a backup file."""
+        _LOGGER.warning("Restoring History Archiver DB from %s", source_path)
+        async with self._lock:
+            if self._conn is not None:
+                await self._conn.close()
+                self._conn = None
+            copy2(source_path, self._db_path)
+            self._conn = await aiosqlite.connect(self._db_path)
+            await self._conn.execute("PRAGMA journal_mode=WAL;")
+            await self._conn.execute("PRAGMA foreign_keys=ON;")
+            await self._ensure_schema()
+        _LOGGER.info("History Archiver DB restored from %s", source_path)
+
     async def async_close(self) -> None:
         if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+            await
