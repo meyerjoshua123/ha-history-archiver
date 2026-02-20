@@ -1,10 +1,20 @@
 {
   "domain": "history_archiver",
   "name": "History Archiver",
-  "version": "0.0.1",
-  "documentation": "https://github.com/YOUR_USERNAME/ha-history-archiver",
-  "requirements": [],
-  "dependencies": [],
-  "codeowners": ["@YOUR_USERNAME"],
-  "config_flow": true
+  "version": "0.1.0",
+  "documentation": "https://github.com/meyerjoshua123/ha-history-archiver",
+  "requirements": [
+    "aiosqlite>=0.19.0",
+    "openpyxl>=3.1.0",
+    "pandas>=2.0.0",
+    "pyarrow>=15.0.0"
+  ],
+  "codeowners": [
+    "@your-github"
+  ],
+  "config_flow": true,
+  "iot_class": "local_push",
+  "loggers": [
+    "history_archiver"
+  ]
 }
