@@ -3,12 +3,19 @@ from __future__ import annotations
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 
-DOMAIN = "history_archiver"
+from .const import DOMAIN
+from .database import initialize_database
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up the integration from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+
+    # Initialize the SQLite database
+    initialize_database(hass)
+
     return True
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Unload the integration."""
