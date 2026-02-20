@@ -1,0 +1,10 @@
+{
+  "domain": "history_archiver",
+  "name": "History Archiver",
+  "version": "0.0.1",
+  "documentation": "https://github.com/YOUR_USERNAME/ha-history-archiver",
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": ["@YOUR_USERNAME"],
+  "config_flow": true
+}
