@@ -1,89 +1,60 @@
-from __future__ import annotations
-
-import asyncio
-from datetime import datetime
-from typing import Optional
+import logging
+from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.util.dt import now as ha_now
 
-from .const import DOMAIN
+from .database import Database
+from .entity_manager import EntityManager
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class Scheduler:
-    """Main heartbeat engine for History Archiver."""
+    """Global sampling scheduler."""
 
-    def __init__(self, hass: HomeAssistant):
-        self.hass = hass
-        self._unsub: Optional[callback] = None
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        db: Database,
+        entity_manager: EntityManager,
+        interval_seconds: int,
+    ) -> None:
+        self._hass = hass
+        self._db = db
+        self._entity_manager = entity_manager
+        self._interval = timedelta(seconds=interval_seconds)
+        self._unsub = None
 
-    # ---------------------------------------------------------
-    # START SCHEDULER
-    # ---------------------------------------------------------
-    def start(self):
-        """Start the repeating heartbeat."""
-        # Run every 30 seconds for now (we will make this dynamic later)
-        interval = 30
-
+    async def async_start(self) -> None:
+        _LOGGER.info("Starting History Archiver scheduler at %ss", self._interval.total_seconds())
         self._unsub = async_track_time_interval(
-            self.hass,
-            self._heartbeat,
-            timedelta(seconds=interval),
+            self._hass, self._async_tick, self._interval
         )
 
-    # ---------------------------------------------------------
-    # STOP SCHEDULER
-    # ---------------------------------------------------------
-    def stop(self):
-        """Stop the heartbeat."""
+    async def async_stop(self) -> None:
         if self._unsub:
             self._unsub()
             self._unsub = None
 
-    # ---------------------------------------------------------
-    # HEARTBEAT LOOP
-    # ---------------------------------------------------------
-    async def _heartbeat(self, now):
-        """Runs every X seconds."""
-        profiles = self.hass.data[DOMAIN]["profiles"]
-        entities = self.hass.data[DOMAIN]["entities"]
+    @callback
+    async def _async_tick(self, now: datetime) -> None:
+        """Sample all entities at the global interval."""
+        # Sync entities from registries (new devices/entities)
+        await self._entity_manager.async_sync_entities()
 
-        # Load all profiles
-        profile_list = profiles.load_profiles()
+        # For now, we sample all entities that exist in our DB.
+        rows = await self._db.async_fetchall("SELECT entity_id FROM entities")
+        entity_ids = [r[0] for r in rows]
 
-        # Load all entities
-        entity_list = entities.load_entities()
+        states = self._hass.states
 
-        # -----------------------------------------------------
-        # FUTURE: Detect new entities
-        # -----------------------------------------------------
-        # (We will implement this later)
-        # -----------------------------------------------------
-
-        # -----------------------------------------------------
-        # FUTURE: Detect metadata changes
-        # -----------------------------------------------------
-        # (We will implement this later)
-        # -----------------------------------------------------
-
-        # -----------------------------------------------------
-        # FUTURE: Sample entity states
-        # -----------------------------------------------------
-        # (We will implement this later)
-        # -----------------------------------------------------
-
-        # -----------------------------------------------------
-        # FUTURE: Trigger rollover events
-        # -----------------------------------------------------
-        # (We will implement this later)
-        # -----------------------------------------------------
-
-        # -----------------------------------------------------
-        # FUTURE: Trigger uploads
-        # -----------------------------------------------------
-        # (We will implement this later)
-        # -----------------------------------------------------
-
-        # For now, just log a heartbeat to the console
-        print(f"[History Archiver] Heartbeat at {datetime.now().isoformat()}")
+        for entity_id in entity_ids:
+            state = states.get(entity_id)
+            if state is None:
+                continue
+            try:
+                value = float(state.state)
+            except (ValueError, TypeError):
+                continue
+            await self._entity_manager.async_record_sample(entity_id, value)
