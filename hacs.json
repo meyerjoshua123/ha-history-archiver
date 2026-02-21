@@ -1,0 +1,6 @@
+{
+  "name": "History Archiver",
+  "domains": ["history_archiver"],
+  "country": "all",
+  "homeassistant": "2024.1.0"
+}
