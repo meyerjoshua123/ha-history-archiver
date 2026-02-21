@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 import pandas as pd
+import pyarrow as pa
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import async_get as async_get_device_registry
