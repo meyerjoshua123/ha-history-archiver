@@ -194,4 +194,5 @@ class Database:
 
     async def async_close(self) -> None:
         if self._conn is not None:
-            await
+            await self._conn.close()
+            self._conn = None
