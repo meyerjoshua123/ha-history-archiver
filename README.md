@@ -127,8 +127,10 @@ How often to record entity state samples.
 **Recommended: 10s**
 
 ### **Export Path**  
-Where export files will be written.  
+Where export files will be written.
+
 Default: config/www/community/ha-history-archiver
+
 You can change this anytime via the integration’s **Options**.
 
 ---
