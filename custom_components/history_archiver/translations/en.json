@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "History Archiver",
+        "description": "Configure the global recording interval and export path.",
+        "data": {
+          "global_interval": "Record Interval (s)",
+          "export_path": "Export Path"
+        }
+      }
+    },
+    "error": {
+      "invalid_interval": "Interval must be a positive number."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "History Archiver Options",
+        "description": "Update the global recording interval and export path.",
+        "data": {
+          "global_interval": "Record Interval (s)",
+          "export_path": "Export Path"
+        }
+      }
+    },
+    "error": {
+      "invalid_interval": "Interval must be a positive number."
+    }
+  }
+}
