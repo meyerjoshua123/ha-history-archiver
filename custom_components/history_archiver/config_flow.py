@@ -10,12 +10,14 @@ from homeassistant.core import callback
 from .const import (
     CONF_EXPORT_PATH,
     CONF_GLOBAL_INTERVAL,
-    DEFAULT_EXPORT_PATH,
     DEFAULT_GLOBAL_INTERVAL,
     DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Your desired default export path
+DEFAULT_UI_EXPORT_PATH = "config/www/community/ha-history-archiver"
 
 
 class HistoryArchiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -38,7 +40,7 @@ class HistoryArchiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={
                         CONF_GLOBAL_INTERVAL: interval,
                         CONF_EXPORT_PATH: user_input.get(
-                            CONF_EXPORT_PATH, DEFAULT_EXPORT_PATH
+                            CONF_EXPORT_PATH, DEFAULT_UI_EXPORT_PATH
                         ),
                     },
                 )
@@ -48,10 +50,10 @@ class HistoryArchiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     CONF_GLOBAL_INTERVAL,
                     default=DEFAULT_GLOBAL_INTERVAL,
-                ): int,
+                ): vol.Coerce(int),
                 vol.Optional(
                     CONF_EXPORT_PATH,
-                    default=DEFAULT_EXPORT_PATH,
+                    default=DEFAULT_UI_EXPORT_PATH,
                 ): str,
             }
         )
@@ -60,6 +62,9 @@ class HistoryArchiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=data_schema,
             errors=errors,
+            description_placeholders={
+                "recommended": "Recommended: 10s",
+            }
         )
 
     @staticmethod
@@ -92,7 +97,7 @@ class HistoryArchiverOptionsFlow(config_entries.OptionsFlow):
                         CONF_EXPORT_PATH: user_input.get(
                             CONF_EXPORT_PATH,
                             self._config_entry.data.get(
-                                CONF_EXPORT_PATH, DEFAULT_EXPORT_PATH
+                                CONF_EXPORT_PATH, DEFAULT_UI_EXPORT_PATH
                             ),
                         ),
                     },
@@ -106,7 +111,7 @@ class HistoryArchiverOptionsFlow(config_entries.OptionsFlow):
         )
         current_export_path = self._config_entry.options.get(
             CONF_EXPORT_PATH,
-            self._config_entry.data.get(CONF_EXPORT_PATH, DEFAULT_EXPORT_PATH),
+            self._config_entry.data.get(CONF_EXPORT_PATH, DEFAULT_UI_EXPORT_PATH),
         )
 
         data_schema = vol.Schema(
@@ -114,7 +119,7 @@ class HistoryArchiverOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_GLOBAL_INTERVAL,
                     default=current_interval,
-                ): int,
+                ): vol.Coerce(int),
                 vol.Optional(
                     CONF_EXPORT_PATH,
                     default=current_export_path,
@@ -126,4 +131,7 @@ class HistoryArchiverOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=data_schema,
             errors=errors,
+            description_placeholders={
+                "recommended": "Recommended: 10s",
+            }
         )
