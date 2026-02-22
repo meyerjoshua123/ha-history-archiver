@@ -46,7 +46,6 @@ class Database:
                 version,
                 DB_SCHEMA_VERSION,
             )
-            # Migrations could be added here later.
 
     async def _create_schema(self) -> None:
         _LOGGER.info("Creating History Archiver DB schema")
@@ -57,9 +56,6 @@ class Database:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 version INTEGER NOT NULL
             );
-
-            INSERT OR REPLACE INTO schema_version (id, version)
-            VALUES (1, :version);
 
             CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,9 +133,13 @@ class Database:
             );
             """
         )
+
+        # FIXED: Insert schema version correctly
         await self._conn.execute(
-            "PRAGMA user_version = ?;", (DB_SCHEMA_VERSION,)
+            "INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)",
+            (DB_SCHEMA_VERSION,)
         )
+
         await self._conn.commit()
 
     async def async_execute(self, query: str, params: tuple | dict | None = None):
@@ -160,7 +160,6 @@ class Database:
         return row
 
     async def async_backup(self, backup_path: str) -> None:
-        """Create a backup copy of the DB."""
         _LOGGER.info("Creating DB backup at %s", backup_path)
         async with self._lock:
             async with aiosqlite.connect(backup_path) as backup_conn:
@@ -179,7 +178,6 @@ class Database:
         )
 
     async def async_restore(self, source_path: str) -> None:
-        """Restore DB from a backup file."""
         _LOGGER.warning("Restoring History Archiver DB from %s", source_path)
         async with self._lock:
             if self._conn is not None:
